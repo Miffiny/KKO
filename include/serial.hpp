@@ -15,7 +15,8 @@ enum class ModelMode : uint8_t {
     Delta = 1,
     Left2D = 2,
     Top2D = 3,
-    Average2D = 4
+    Average2D = 4,
+    Paeth2D = 5
 };
 
 struct SerialOptions {

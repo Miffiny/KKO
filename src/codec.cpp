@@ -145,7 +145,7 @@ void validate_flags(const uint8_t flags) {
     }
 
     const uint8_t model_bits = (flags & MODEL_MASK) >> MODEL_SHIFT;
-    if (model_bits > static_cast<uint8_t>(ModelMode::Average2D)) {
+    if (model_bits > static_cast<uint8_t>(ModelMode::Paeth2D)) {
         throw std::runtime_error("Unknown model encoded in container header");
     }
 }
@@ -657,13 +657,13 @@ std::vector<ModelMode> allowed_model_modes(const bool use_model) {
     if (!use_model) {
         return {ModelMode::Raw};
     }
-
     return {
         ModelMode::Raw,
         ModelMode::Delta,
         ModelMode::Left2D,
         ModelMode::Top2D,
-        ModelMode::Average2D
+        ModelMode::Average2D,
+        ModelMode::Paeth2D
     };
 }
 

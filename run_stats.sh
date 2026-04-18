@@ -10,7 +10,7 @@ mkdir -p "$OUT_DIR"
 
 n=0
 while [[ -e "$OUT_DIR/stats_${n}.txt" ]]; do
-    ((n++))
+    n=$((n + 1))
 done
 STATS_FILE="$OUT_DIR/stats_${n}.txt"
 

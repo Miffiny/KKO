@@ -1,5 +1,5 @@
 #include "../include/serial.hpp"
-
+#include <cstdlib>
 #include <stdexcept>
 
 namespace {
@@ -20,6 +20,32 @@ void validate_image(const Image& image) {
     const size_t expected_size = checked_pixel_count(image.width, image.height);
     if (image.pixels.size() != expected_size) {
         throw std::runtime_error("Image pixel buffer size does not match image dimensions");
+    }
+}
+    Image extract_block(const Image& image, uint32_t bx, uint32_t by,
+                        uint32_t bw, uint32_t bh) {
+    std::vector<uint8_t> pixels;
+    pixels.reserve(static_cast<size_t>(bw) * bh);
+
+    for (uint32_t y = 0; y < bh; ++y) {
+        for (uint32_t x = 0; x < bw; ++x) {
+            const uint32_t src_x = bx + x;
+            const uint32_t src_y = by + y;
+            pixels.push_back(image.pixels[src_y * image.width + src_x]);
+        }
+    }
+
+    return Image{bw, bh, std::move(pixels)};
+}
+
+    void place_block(Image& image, const Image& block, uint32_t bx, uint32_t by) {
+    for (uint32_t y = 0; y < block.height; ++y) {
+        for (uint32_t x = 0; x < block.width; ++x) {
+            const uint32_t dst_x = bx + x;
+            const uint32_t dst_y = by + y;
+            image.pixels[dst_y * image.width + dst_x] =
+                block.pixels[y * block.width + x];
+        }
     }
 }
 
@@ -170,6 +196,61 @@ uint8_t predict_average(const std::vector<uint8_t>& pixels,
     return static_cast<uint8_t>((static_cast<unsigned>(left) +
                                  static_cast<unsigned>(top)) / 2u);
 }
+uint8_t predict_paeth(const std::vector<uint8_t>& pixels,
+                      const uint32_t x,
+                      const uint32_t y,
+                      const uint32_t width) {
+    const int a = static_cast<int>(predict_left(pixels, x, y, width));
+    const int b = static_cast<int>(predict_top(pixels, x, y, width));
+
+    int c = 0;
+    if (x > 0 && y > 0) {
+        c = static_cast<int>(pixels[pixel_index(x - 1, y - 1, width)]);
+    }
+
+    const int p  = a + b - c;
+    const int pa = std::abs(p - a);
+    const int pb = std::abs(p - b);
+    const int pc = std::abs(p - c);
+
+    if (pa <= pb && pa <= pc) {
+        return static_cast<uint8_t>(a);
+    }
+    if (pb <= pc) {
+        return static_cast<uint8_t>(b);
+    }
+    return static_cast<uint8_t>(c);
+}
+
+std::vector<uint8_t> encode_paeth_2d(const Image& image) {
+    std::vector<uint8_t> residuals(image.pixels.size());
+
+    for (uint32_t y = 0; y < image.height; ++y) {
+        for (uint32_t x = 0; x < image.width; ++x) {
+            const size_t idx = pixel_index(x, y, image.width);
+            const uint8_t pred = predict_paeth(image.pixels, x, y, image.width);
+            residuals[idx] = static_cast<uint8_t>(image.pixels[idx] - pred);
+        }
+    }
+
+    return residuals;
+}
+
+Image decode_paeth_2d(const std::vector<uint8_t>& residuals,
+                          const uint32_t width,
+                          const uint32_t height) {
+    std::vector<uint8_t> pixels(checked_pixel_count(width, height));
+
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const size_t idx = pixel_index(x, y, width);
+            const uint8_t pred = predict_paeth(pixels, x, y, width);
+            pixels[idx] = static_cast<uint8_t>(pred + residuals[idx]);
+        }
+    }
+
+    return Image{width, height, std::move(pixels)};
+}
 
 std::vector<uint8_t> encode_left_2d(const Image& image) {
     std::vector<uint8_t> residuals(image.pixels.size());
@@ -263,37 +344,42 @@ Image decode_average_2d(const std::vector<uint8_t>& residuals,
 
 std::vector<uint8_t> encode_2d_model(const Image& image, const ModelMode mode) {
     switch (mode) {
-        case ModelMode::Left2D:
-            return encode_left_2d(image);
-        case ModelMode::Top2D:
-            return encode_top_2d(image);
-        case ModelMode::Average2D:
-            return encode_average_2d(image);
-        default:
-            throw std::runtime_error("Unknown 2D model mode");
+    case ModelMode::Left2D:
+        return encode_left_2d(image);
+    case ModelMode::Top2D:
+        return encode_top_2d(image);
+    case ModelMode::Average2D:
+        return encode_average_2d(image);
+    case ModelMode::Paeth2D:
+        return encode_paeth_2d(image);
+    default:
+        throw std::runtime_error("Unknown 2D model mode");
     }
 }
 
 Image decode_2d_model(const std::vector<uint8_t>& residuals,
-                      const uint32_t width,
-                      const uint32_t height,
-                      const ModelMode mode) {
+                          const uint32_t width,
+                          const uint32_t height,
+                          const ModelMode mode) {
     switch (mode) {
-        case ModelMode::Left2D:
-            return decode_left_2d(residuals, width, height);
-        case ModelMode::Top2D:
-            return decode_top_2d(residuals, width, height);
-        case ModelMode::Average2D:
-            return decode_average_2d(residuals, width, height);
-        default:
-            throw std::runtime_error("Unknown 2D model mode");
+    case ModelMode::Left2D:
+        return decode_left_2d(residuals, width, height);
+    case ModelMode::Top2D:
+        return decode_top_2d(residuals, width, height);
+    case ModelMode::Average2D:
+        return decode_average_2d(residuals, width, height);
+    case ModelMode::Paeth2D:
+        return decode_paeth_2d(residuals, width, height);
+    default:
+        throw std::runtime_error("Unknown 2D model mode");
     }
 }
 
 bool is_2d_model(const ModelMode mode) {
     return mode == ModelMode::Left2D ||
            mode == ModelMode::Top2D ||
-           mode == ModelMode::Average2D;
+           mode == ModelMode::Average2D ||
+           mode == ModelMode::Paeth2D;
 }
 
 } // namespace
