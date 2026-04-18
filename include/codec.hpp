@@ -22,9 +22,11 @@ struct CodecPackage {
 
 enum HeaderFlags : uint8_t {
     FLAG_COMPRESSED = 1 << 0,
-    FLAG_VERTICAL   = 1 << 1,
-    FLAG_DELTA      = 1 << 2
+    FLAG_VERTICAL   = 1 << 1
 };
+
+constexpr uint8_t MODEL_SHIFT = 2;
+constexpr uint8_t MODEL_MASK  = 0b00011100;
 
 uint8_t make_flags(const SerialOptions& options, bool compressed);
 SerialOptions parse_flags(uint8_t flags);

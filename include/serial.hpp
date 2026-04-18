@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <vector>
+
 #include "raw_io.hpp"
 
 enum class ScanMode : uint8_t {
@@ -11,7 +12,10 @@ enum class ScanMode : uint8_t {
 
 enum class ModelMode : uint8_t {
     Raw = 0,
-    Delta = 1
+    Delta = 1,
+    Left2D = 2,
+    Top2D = 3,
+    Average2D = 4
 };
 
 struct SerialOptions {

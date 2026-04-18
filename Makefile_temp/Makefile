@@ -1,5 +1,5 @@
 CXX := g++
-CXXFLAGS := -std=c++17 -Wall -Wextra -Iinclude -pthread
+CXXFLAGS := -std=c++17 -Wall -Wextra -Iinclude -pthread 
 SRC_DIR := src
 OBJ_DIR := obj
 BIN := lz_codec
@@ -7,11 +7,9 @@ BIN := lz_codec
 SRCS := $(wildcard $(SRC_DIR)/*.cpp)
 OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SRCS))
 
-.PHONY: all build clean test stats doc zip
+.PHONY: all clean doc zip
 
-all: build
-
-build: $(BIN)
+all: test
 
 # --- PREKLAD ---
 
@@ -60,5 +58,4 @@ test: $(BIN)
 	done
 	@echo "=== Všechny testy prošly ==="
 
-stats: build
-	./run_stats.sh
+
