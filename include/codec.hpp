@@ -1,18 +1,17 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
 #include <vector>
-
+#include <string>
 #include "args.hpp"
 #include "raw_io.hpp"
 #include "serial.hpp"
 
 struct CodecHeader {
-    char magic[2];      // "LZ"
-    uint8_t width_256;  // width  / 256
-    uint8_t height_256; // height / 256
-    uint8_t flags;      // compressed + scan + model
+    char magic[2];
+    uint8_t width_256;
+    uint8_t height_256;
+    uint8_t flags;
 };
 
 struct CodecPackage {

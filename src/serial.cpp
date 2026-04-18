@@ -4,382 +4,92 @@
 
 namespace {
 
-size_t checked_pixel_count(const uint32_t width, const uint32_t height) {
-    return static_cast<size_t>(width) * static_cast<size_t>(height);
-}
-
-size_t pixel_index(const uint32_t x, const uint32_t y, const uint32_t width) {
-    return static_cast<size_t>(y) * width + x;
-}
+size_t pixel_count(uint32_t w, uint32_t h) { return static_cast<size_t>(w) * h; }
+size_t idx(uint32_t x, uint32_t y, uint32_t w) { return static_cast<size_t>(y) * w + x; }
 
 void validate_image(const Image& image) {
-    if (image.width == 0 || image.height == 0) {
-        throw std::runtime_error("Image dimensions must be > 0");
-    }
-
-    const size_t expected_size = checked_pixel_count(image.width, image.height);
-    if (image.pixels.size() != expected_size) {
+    if (!image.width || !image.height) throw std::runtime_error("Image dimensions must be > 0");
+    if (image.pixels.size() != pixel_count(image.width, image.height))
         throw std::runtime_error("Image pixel buffer size does not match image dimensions");
-    }
-}
-    Image extract_block(const Image& image, uint32_t bx, uint32_t by,
-                        uint32_t bw, uint32_t bh) {
-    std::vector<uint8_t> pixels;
-    pixels.reserve(static_cast<size_t>(bw) * bh);
-
-    for (uint32_t y = 0; y < bh; ++y) {
-        for (uint32_t x = 0; x < bw; ++x) {
-            const uint32_t src_x = bx + x;
-            const uint32_t src_y = by + y;
-            pixels.push_back(image.pixels[src_y * image.width + src_x]);
-        }
-    }
-
-    return Image{bw, bh, std::move(pixels)};
 }
 
-    void place_block(Image& image, const Image& block, uint32_t bx, uint32_t by) {
-    for (uint32_t y = 0; y < block.height; ++y) {
-        for (uint32_t x = 0; x < block.width; ++x) {
-            const uint32_t dst_x = bx + x;
-            const uint32_t dst_y = by + y;
-            image.pixels[dst_y * image.width + dst_x] =
-                block.pixels[y * block.width + x];
-        }
-    }
-}
-
-void validate_serialized_data(const std::vector<uint8_t>& data,
-                              const uint32_t width,
-                              const uint32_t height) {
-    if (width == 0 || height == 0) {
-        throw std::runtime_error("Image dimensions must be > 0");
-    }
-
-    const size_t expected_size = checked_pixel_count(width, height);
-    if (data.size() != expected_size) {
+void validate_data(const std::vector<uint8_t>& data, uint32_t w, uint32_t h) {
+    if (!w || !h) throw std::runtime_error("Image dimensions must be > 0");
+    if (data.size() != pixel_count(w, h))
         throw std::runtime_error("Serialized data size does not match image dimensions");
-    }
 }
 
-// -----------------------------------------------------------------------------
-// 1D serialization helpers
-// -----------------------------------------------------------------------------
-
-std::vector<uint8_t> serialize_horizontal_raw(const Image& image) {
-    return image.pixels;
-}
-
-std::vector<uint8_t> serialize_vertical_raw(const Image& image) {
+std::vector<uint8_t> scan_raw(const Image& image, ScanMode mode) {
+    if (mode == ScanMode::Horizontal) return image.pixels;
     std::vector<uint8_t> out;
     out.reserve(image.pixels.size());
-
-    for (uint32_t x = 0; x < image.width; ++x) {
-        for (uint32_t y = 0; y < image.height; ++y) {
-            out.push_back(image.pixels[pixel_index(x, y, image.width)]);
-        }
-    }
-
+    for (uint32_t x = 0; x < image.width; ++x)
+        for (uint32_t y = 0; y < image.height; ++y)
+            out.push_back(image.pixels[idx(x, y, image.width)]);
     return out;
 }
 
-Image deserialize_horizontal_raw(const std::vector<uint8_t>& data,
-                                 const uint32_t width,
-                                 const uint32_t height) {
-    return Image{width, height, data};
+Image unscan_raw(const std::vector<uint8_t>& data, uint32_t w, uint32_t h, ScanMode mode) {
+    if (mode == ScanMode::Horizontal) return {w, h, data};
+    std::vector<uint8_t> pixels(pixel_count(w, h));
+    size_t k = 0;
+    for (uint32_t x = 0; x < w; ++x)
+        for (uint32_t y = 0; y < h; ++y)
+            pixels[idx(x, y, w)] = data[k++];
+    return {w, h, std::move(pixels)};
 }
 
-Image deserialize_vertical_raw(const std::vector<uint8_t>& data,
-                               const uint32_t width,
-                               const uint32_t height) {
-    std::vector<uint8_t> pixels(checked_pixel_count(width, height));
-
-    size_t idx = 0;
-    for (uint32_t x = 0; x < width; ++x) {
-        for (uint32_t y = 0; y < height; ++y) {
-            pixels[pixel_index(x, y, width)] = data[idx++];
-        }
-    }
-
-    return Image{width, height, std::move(pixels)};
-}
-
-std::vector<uint8_t> serialize_raw_by_scan(const Image& image, const ScanMode mode) {
-    switch (mode) {
-        case ScanMode::Horizontal:
-            return serialize_horizontal_raw(image);
-        case ScanMode::Vertical:
-            return serialize_vertical_raw(image);
-        default:
-            throw std::runtime_error("Unknown scan mode");
-    }
-}
-
-Image deserialize_raw_by_scan(const std::vector<uint8_t>& data,
-                              const uint32_t width,
-                              const uint32_t height,
-                              const ScanMode mode) {
-    switch (mode) {
-        case ScanMode::Horizontal:
-            return deserialize_horizontal_raw(data, width, height);
-        case ScanMode::Vertical:
-            return deserialize_vertical_raw(data, width, height);
-        default:
-            throw std::runtime_error("Unknown scan mode");
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Current 1D delta model
-// -----------------------------------------------------------------------------
-
-std::vector<uint8_t> apply_delta_model(const std::vector<uint8_t>& input) {
-    if (input.empty()) {
-        return {};
-    }
-
-    std::vector<uint8_t> out(input.size());
-    out[0] = input[0];
-
-    for (size_t i = 1; i < input.size(); ++i) {
-        out[i] = static_cast<uint8_t>(input[i] - input[i - 1]);
-    }
-
+std::vector<uint8_t> delta_encode(const std::vector<uint8_t>& in) {
+    if (in.empty()) return {};
+    std::vector<uint8_t> out(in.size());
+    out[0] = in[0];
+    for (size_t i = 1; i < in.size(); ++i) out[i] = static_cast<uint8_t>(in[i] - in[i - 1]);
     return out;
 }
 
-std::vector<uint8_t> invert_delta_model(const std::vector<uint8_t>& input) {
-    if (input.empty()) {
-        return {};
-    }
-
-    std::vector<uint8_t> out(input.size());
-    out[0] = input[0];
-
-    for (size_t i = 1; i < input.size(); ++i) {
-        out[i] = static_cast<uint8_t>(out[i - 1] + input[i]);
-    }
-
+std::vector<uint8_t> delta_decode(const std::vector<uint8_t>& in) {
+    if (in.empty()) return {};
+    std::vector<uint8_t> out(in.size());
+    out[0] = in[0];
+    for (size_t i = 1; i < in.size(); ++i) out[i] = static_cast<uint8_t>(out[i - 1] + in[i]);
     return out;
 }
 
-// -----------------------------------------------------------------------------
-// 2D predictor helpers
-// -----------------------------------------------------------------------------
-
-uint8_t predict_left(const std::vector<uint8_t>& pixels,
-                     const uint32_t x,
-                     const uint32_t y,
-                     const uint32_t width) {
-    if (x == 0) {
-        return 0;
-    }
-    return pixels[pixel_index(x - 1, y, width)];
+uint8_t left(const std::vector<uint8_t>& p, uint32_t x, uint32_t y, uint32_t w) {
+    return x ? p[idx(x - 1, y, w)] : 0;
 }
 
-uint8_t predict_top(const std::vector<uint8_t>& pixels,
-                    const uint32_t x,
-                    const uint32_t y,
-                    const uint32_t width) {
-    if (y == 0) {
-        return 0;
-    }
-    return pixels[pixel_index(x, y - 1, width)];
+uint8_t top(const std::vector<uint8_t>& p, uint32_t x, uint32_t y, uint32_t w) {
+    return y ? p[idx(x, y - 1, w)] : 0;
 }
 
-uint8_t predict_average(const std::vector<uint8_t>& pixels,
-                        const uint32_t x,
-                        const uint32_t y,
-                        const uint32_t width) {
-    const uint8_t left = predict_left(pixels, x, y, width);
-    const uint8_t top  = predict_top(pixels, x, y, width);
-    return static_cast<uint8_t>((static_cast<unsigned>(left) +
-                                 static_cast<unsigned>(top)) / 2u);
-}
-uint8_t predict_paeth(const std::vector<uint8_t>& pixels,
-                      const uint32_t x,
-                      const uint32_t y,
-                      const uint32_t width) {
-    const int a = static_cast<int>(predict_left(pixels, x, y, width));
-    const int b = static_cast<int>(predict_top(pixels, x, y, width));
-
-    int c = 0;
-    if (x > 0 && y > 0) {
-        c = static_cast<int>(pixels[pixel_index(x - 1, y - 1, width)]);
-    }
-
-    const int p  = a + b - c;
-    const int pa = std::abs(p - a);
-    const int pb = std::abs(p - b);
-    const int pc = std::abs(p - c);
-
-    if (pa <= pb && pa <= pc) {
-        return static_cast<uint8_t>(a);
-    }
-    if (pb <= pc) {
-        return static_cast<uint8_t>(b);
-    }
-    return static_cast<uint8_t>(c);
+uint8_t paeth(const std::vector<uint8_t>& p, uint32_t x, uint32_t y, uint32_t w) {
+    const int a = left(p, x, y, w);
+    const int b = top(p, x, y, w);
+    const int c = (x && y) ? p[idx(x - 1, y - 1, w)] : 0;
+    const int pred = a + b - c;
+    const int pa = std::abs(pred - a), pb = std::abs(pred - b), pc = std::abs(pred - c);
+    return static_cast<uint8_t>(pa <= pb && pa <= pc ? a : (pb <= pc ? b : c));
 }
 
-std::vector<uint8_t> encode_paeth_2d(const Image& image) {
-    std::vector<uint8_t> residuals(image.pixels.size());
-
-    for (uint32_t y = 0; y < image.height; ++y) {
+std::vector<uint8_t> paeth_encode(const Image& image) {
+    std::vector<uint8_t> out(image.pixels.size());
+    for (uint32_t y = 0; y < image.height; ++y)
         for (uint32_t x = 0; x < image.width; ++x) {
-            const size_t idx = pixel_index(x, y, image.width);
-            const uint8_t pred = predict_paeth(image.pixels, x, y, image.width);
-            residuals[idx] = static_cast<uint8_t>(image.pixels[idx] - pred);
+            const size_t i = idx(x, y, image.width);
+            out[i] = static_cast<uint8_t>(image.pixels[i] - paeth(image.pixels, x, y, image.width));
         }
-    }
-
-    return residuals;
+    return out;
 }
 
-Image decode_paeth_2d(const std::vector<uint8_t>& residuals,
-                          const uint32_t width,
-                          const uint32_t height) {
-    std::vector<uint8_t> pixels(checked_pixel_count(width, height));
-
-    for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
-            const size_t idx = pixel_index(x, y, width);
-            const uint8_t pred = predict_paeth(pixels, x, y, width);
-            pixels[idx] = static_cast<uint8_t>(pred + residuals[idx]);
+Image paeth_decode(const std::vector<uint8_t>& residuals, uint32_t w, uint32_t h) {
+    std::vector<uint8_t> pixels(pixel_count(w, h));
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            const size_t i = idx(x, y, w);
+            pixels[i] = static_cast<uint8_t>(paeth(pixels, x, y, w) + residuals[i]);
         }
-    }
-
-    return Image{width, height, std::move(pixels)};
-}
-
-std::vector<uint8_t> encode_left_2d(const Image& image) {
-    std::vector<uint8_t> residuals(image.pixels.size());
-
-    for (uint32_t y = 0; y < image.height; ++y) {
-        for (uint32_t x = 0; x < image.width; ++x) {
-            const size_t idx = pixel_index(x, y, image.width);
-            const uint8_t pred = predict_left(image.pixels, x, y, image.width);
-            residuals[idx] = static_cast<uint8_t>(image.pixels[idx] - pred);
-        }
-    }
-
-    return residuals;
-}
-
-std::vector<uint8_t> encode_top_2d(const Image& image) {
-    std::vector<uint8_t> residuals(image.pixels.size());
-
-    for (uint32_t y = 0; y < image.height; ++y) {
-        for (uint32_t x = 0; x < image.width; ++x) {
-            const size_t idx = pixel_index(x, y, image.width);
-            const uint8_t pred = predict_top(image.pixels, x, y, image.width);
-            residuals[idx] = static_cast<uint8_t>(image.pixels[idx] - pred);
-        }
-    }
-
-    return residuals;
-}
-
-std::vector<uint8_t> encode_average_2d(const Image& image) {
-    std::vector<uint8_t> residuals(image.pixels.size());
-
-    for (uint32_t y = 0; y < image.height; ++y) {
-        for (uint32_t x = 0; x < image.width; ++x) {
-            const size_t idx = pixel_index(x, y, image.width);
-            const uint8_t pred = predict_average(image.pixels, x, y, image.width);
-            residuals[idx] = static_cast<uint8_t>(image.pixels[idx] - pred);
-        }
-    }
-
-    return residuals;
-}
-
-Image decode_left_2d(const std::vector<uint8_t>& residuals,
-                     const uint32_t width,
-                     const uint32_t height) {
-    std::vector<uint8_t> pixels(checked_pixel_count(width, height));
-
-    for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
-            const size_t idx = pixel_index(x, y, width);
-            const uint8_t pred = predict_left(pixels, x, y, width);
-            pixels[idx] = static_cast<uint8_t>(pred + residuals[idx]);
-        }
-    }
-
-    return Image{width, height, std::move(pixels)};
-}
-
-Image decode_top_2d(const std::vector<uint8_t>& residuals,
-                    const uint32_t width,
-                    const uint32_t height) {
-    std::vector<uint8_t> pixels(checked_pixel_count(width, height));
-
-    for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
-            const size_t idx = pixel_index(x, y, width);
-            const uint8_t pred = predict_top(pixels, x, y, width);
-            pixels[idx] = static_cast<uint8_t>(pred + residuals[idx]);
-        }
-    }
-
-    return Image{width, height, std::move(pixels)};
-}
-
-Image decode_average_2d(const std::vector<uint8_t>& residuals,
-                        const uint32_t width,
-                        const uint32_t height) {
-    std::vector<uint8_t> pixels(checked_pixel_count(width, height));
-
-    for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
-            const size_t idx = pixel_index(x, y, width);
-            const uint8_t pred = predict_average(pixels, x, y, width);
-            pixels[idx] = static_cast<uint8_t>(pred + residuals[idx]);
-        }
-    }
-
-    return Image{width, height, std::move(pixels)};
-}
-
-std::vector<uint8_t> encode_2d_model(const Image& image, const ModelMode mode) {
-    switch (mode) {
-    case ModelMode::Left2D:
-        return encode_left_2d(image);
-    case ModelMode::Top2D:
-        return encode_top_2d(image);
-    case ModelMode::Average2D:
-        return encode_average_2d(image);
-    case ModelMode::Paeth2D:
-        return encode_paeth_2d(image);
-    default:
-        throw std::runtime_error("Unknown 2D model mode");
-    }
-}
-
-Image decode_2d_model(const std::vector<uint8_t>& residuals,
-                          const uint32_t width,
-                          const uint32_t height,
-                          const ModelMode mode) {
-    switch (mode) {
-    case ModelMode::Left2D:
-        return decode_left_2d(residuals, width, height);
-    case ModelMode::Top2D:
-        return decode_top_2d(residuals, width, height);
-    case ModelMode::Average2D:
-        return decode_average_2d(residuals, width, height);
-    case ModelMode::Paeth2D:
-        return decode_paeth_2d(residuals, width, height);
-    default:
-        throw std::runtime_error("Unknown 2D model mode");
-    }
-}
-
-bool is_2d_model(const ModelMode mode) {
-    return mode == ModelMode::Left2D ||
-           mode == ModelMode::Top2D ||
-           mode == ModelMode::Average2D ||
-           mode == ModelMode::Paeth2D;
+    return {w, h, std::move(pixels)};
 }
 
 } // namespace
@@ -387,56 +97,34 @@ bool is_2d_model(const ModelMode mode) {
 std::vector<uint8_t> serialize_image(const Image& image, const SerialOptions& options) {
     validate_image(image);
 
-    if (is_2d_model(options.model_mode)) {
-        Image residual_image{
-            image.width,
-            image.height,
-            encode_2d_model(image, options.model_mode)
-        };
-        return serialize_raw_by_scan(residual_image, options.scan_mode);
-    }
+    if (options.model_mode == ModelMode::Raw)
+        return scan_raw(image, options.scan_mode);
 
-    std::vector<uint8_t> serialized = serialize_raw_by_scan(image, options.scan_mode);
+    if (options.model_mode == ModelMode::Delta)
+        return delta_encode(scan_raw(image, options.scan_mode));
 
-    switch (options.model_mode) {
-        case ModelMode::Raw:
-            return serialized;
+    if (options.model_mode == ModelMode::Paeth2D)
+        return scan_raw({image.width, image.height, paeth_encode(image)}, options.scan_mode);
 
-        case ModelMode::Delta:
-            return apply_delta_model(serialized);
-
-        default:
-            throw std::runtime_error("Unknown model mode");
-    }
+    throw std::runtime_error("Unknown model mode");
 }
 
 Image deserialize_image(const std::vector<uint8_t>& data,
-                        const uint32_t width,
-                        const uint32_t height,
+                        uint32_t width,
+                        uint32_t height,
                         const SerialOptions& options) {
-    validate_serialized_data(data, width, height);
+    validate_data(data, width, height);
 
-    if (is_2d_model(options.model_mode)) {
-        const Image residual_image =
-            deserialize_raw_by_scan(data, width, height, options.scan_mode);
+    if (options.model_mode == ModelMode::Raw)
+        return unscan_raw(data, width, height, options.scan_mode);
 
-        return decode_2d_model(residual_image.pixels, width, height, options.model_mode);
+    if (options.model_mode == ModelMode::Delta)
+        return unscan_raw(delta_decode(data), width, height, options.scan_mode);
+
+    if (options.model_mode == ModelMode::Paeth2D) {
+        Image residuals = unscan_raw(data, width, height, options.scan_mode);
+        return paeth_decode(residuals.pixels, width, height);
     }
 
-    std::vector<uint8_t> restored_stream;
-
-    switch (options.model_mode) {
-        case ModelMode::Raw:
-            restored_stream = data;
-            break;
-
-        case ModelMode::Delta:
-            restored_stream = invert_delta_model(data);
-            break;
-
-        default:
-            throw std::runtime_error("Unknown model mode");
-    }
-
-    return deserialize_raw_by_scan(restored_stream, width, height, options.scan_mode);
+    throw std::runtime_error("Unknown model mode");
 }
