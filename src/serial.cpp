@@ -3,22 +3,24 @@
 #include <stdexcept>
 
 namespace {
-
 size_t pixel_count(uint32_t w, uint32_t h) { return static_cast<size_t>(w) * h; }
+
+// Maps 2D image coordinates to the pixel buffer index
 size_t idx(uint32_t x, uint32_t y, uint32_t w) { return static_cast<size_t>(y) * w + x; }
 
+//Helper checks for debug
 void validate_image(const Image& image) {
     if (!image.width || !image.height) throw std::runtime_error("Image dimensions must be > 0");
     if (image.pixels.size() != pixel_count(image.width, image.height))
         throw std::runtime_error("Image pixel buffer size does not match image dimensions");
 }
-
 void validate_data(const std::vector<uint8_t>& data, uint32_t w, uint32_t h) {
     if (!w || !h) throw std::runtime_error("Image dimensions must be > 0");
     if (data.size() != pixel_count(w, h))
         throw std::runtime_error("Serialized data size does not match image dimensions");
 }
 
+//Reorders pixels
 std::vector<uint8_t> scan_raw(const Image& image, ScanMode mode) {
     if (mode == ScanMode::Horizontal) return image.pixels;
     std::vector<uint8_t> out;
@@ -29,6 +31,7 @@ std::vector<uint8_t> scan_raw(const Image& image, ScanMode mode) {
     return out;
 }
 
+// Restores the original order from scan order
 Image unscan_raw(const std::vector<uint8_t>& data, uint32_t w, uint32_t h, ScanMode mode) {
     if (mode == ScanMode::Horizontal) return {w, h, data};
     std::vector<uint8_t> pixels(pixel_count(w, h));
@@ -39,6 +42,7 @@ Image unscan_raw(const std::vector<uint8_t>& data, uint32_t w, uint32_t h, ScanM
     return {w, h, std::move(pixels)};
 }
 
+// Encodes a 1D byte stream as differences from the previous byte
 std::vector<uint8_t> delta_encode(const std::vector<uint8_t>& in) {
     if (in.empty()) return {};
     std::vector<uint8_t> out(in.size());
@@ -47,6 +51,7 @@ std::vector<uint8_t> delta_encode(const std::vector<uint8_t>& in) {
     return out;
 }
 
+// Reconstructs a 1D byte stream from byte differences
 std::vector<uint8_t> delta_decode(const std::vector<uint8_t>& in) {
     if (in.empty()) return {};
     std::vector<uint8_t> out(in.size());
@@ -55,14 +60,15 @@ std::vector<uint8_t> delta_decode(const std::vector<uint8_t>& in) {
     return out;
 }
 
+//Helpers for Paeth
 uint8_t left(const std::vector<uint8_t>& p, uint32_t x, uint32_t y, uint32_t w) {
     return x ? p[idx(x - 1, y, w)] : 0;
 }
-
 uint8_t top(const std::vector<uint8_t>& p, uint32_t x, uint32_t y, uint32_t w) {
     return y ? p[idx(x, y - 1, w)] : 0;
 }
 
+// paeth itself
 uint8_t paeth(const std::vector<uint8_t>& p, uint32_t x, uint32_t y, uint32_t w) {
     const int a = left(p, x, y, w);
     const int b = top(p, x, y, w);
@@ -72,6 +78,7 @@ uint8_t paeth(const std::vector<uint8_t>& p, uint32_t x, uint32_t y, uint32_t w)
     return static_cast<uint8_t>(pa <= pb && pa <= pc ? a : (pb <= pc ? b : c));
 }
 
+// Converts image pixels into Paeth residua
 std::vector<uint8_t> paeth_encode(const Image& image) {
     std::vector<uint8_t> out(image.pixels.size());
     for (uint32_t y = 0; y < image.height; ++y)
@@ -109,6 +116,7 @@ std::vector<uint8_t> serialize_image(const Image& image, const SerialOptions& op
     throw std::runtime_error("Unknown model mode");
 }
 
+// Restores image from serialized bytes
 Image deserialize_image(const std::vector<uint8_t>& data,
                         uint32_t width,
                         uint32_t height,

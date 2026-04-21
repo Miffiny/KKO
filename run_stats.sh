@@ -55,7 +55,6 @@ make build
         total_orig=0
         total_comp=0
         total_time_ms=0
-        declare -A choice_counts=()
 
         for raw_file in "${files[@]}"; do
             name="$(basename "$raw_file")"
@@ -66,28 +65,18 @@ make build
 
             start_ns=$(date +%s%N)
             if [[ -z "$mode" ]]; then
-                choice_output="$("$BIN" -c -i "$raw_file" -o "$comp_file" -w 256)"
+                "$BIN" -c -i "$raw_file" -o "$comp_file" -w 256
             else
                 # shellcheck disable=SC2206
                 extra_flags=($mode)
-                choice_output="$("$BIN" -c -i "$raw_file" -o "$comp_file" -w 256 "${extra_flags[@]}")"
+                "$BIN" -c -i "$raw_file" -o "$comp_file" -w 256 "${extra_flags[@]}"
             fi
             end_ns=$(date +%s%N)
-
-            choice_line="$(printf '%s\n' "$choice_output" | grep '^CHOICE ' || true)"
-            choice_text="${choice_line#CHOICE }"
-
-            if [[ -n "$choice_text" ]]; then
-                choice_key="${choice_text%% size=*}"
-                choice_counts["$choice_key"]=$(( ${choice_counts["$choice_key"]:-0} + 1 ))
-            else
-                choice_text="n/a"
-                choice_key="n/a"
-            fi
 
             elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
             comp_size=$(wc -c < "$comp_file")
             delta_bytes=$(( comp_size - orig_size ))
+            bits_per_pixel=$(awk -v c="$comp_size" -v o="$orig_size" 'BEGIN { printf "%.4f", (c * 8) / o }')
 
             ratio_pct=$(awk -v c="$comp_size" -v o="$orig_size" 'BEGIN { printf "%.2f", (c / o) * 100 }')
             diff_pct=$(awk -v c="$comp_size" -v o="$orig_size" 'BEGIN { printf "%.2f", ((c - o) / o) * 100 }')
@@ -99,8 +88,8 @@ make build
                 verify="FAIL"
             fi
 
-            printf "%-24s | orig=%8d B | comp=%8d B | diff=%8d B | comp/orig=%7s%% | diff=%7s%% | time=%6d ms | choice=%-50s | %s\n" \
-                "$name" "$orig_size" "$comp_size" "$delta_bytes" "$ratio_pct" "$diff_pct" "$elapsed_ms" "$choice_text" "$verify"
+            printf "%-24s | orig=%8d B | comp=%8d B | diff=%8d B | bpp=%8s | comp/orig=%7s%% | diff=%7s%% | time=%6d ms | %s\n" \
+                "$name" "$orig_size" "$comp_size" "$delta_bytes" "$bits_per_pixel" "$ratio_pct" "$diff_pct" "$elapsed_ms" "$verify"
 
             total_orig=$((total_orig + orig_size))
             total_comp=$((total_comp + comp_size))
@@ -110,16 +99,11 @@ make build
         total_ratio_pct=$(awk -v c="$total_comp" -v o="$total_orig" 'BEGIN { printf "%.2f", (c / o) * 100 }')
         total_diff_bytes=$(( total_comp - total_orig ))
         total_diff_pct=$(awk -v c="$total_comp" -v o="$total_orig" 'BEGIN { printf "%.2f", ((c - o) / o) * 100 }')
+        avg_bpp=$(awk -v c="$total_comp" -v o="$total_orig" 'BEGIN { printf "%.4f", (c * 8) / o }')
 
         echo
-        printf "TOTAL                    | orig=%8d B | comp=%8d B | diff=%8d B | comp/orig=%7s%% | diff=%7s%% | time=%6d ms\n" \
-            "$total_orig" "$total_comp" "$total_diff_bytes" "$total_ratio_pct" "$total_diff_pct" "$total_time_ms"
-        echo
-
-        echo "CHOICE SUMMARY:"
-        for key in "${!choice_counts[@]}"; do
-            printf "  %-60s %d\n" "$key" "${choice_counts[$key]}"
-        done | sort
+        printf "TOTAL                    | orig=%8d B | comp=%8d B | diff=%8d B | bpp=%8s | comp/orig=%7s%% | diff=%7s%% | time=%6d ms\n" \
+            "$total_orig" "$total_comp" "$total_diff_bytes" "$avg_bpp" "$total_ratio_pct" "$total_diff_pct" "$total_time_ms"
         echo
     done
 } > "$STATS_FILE"

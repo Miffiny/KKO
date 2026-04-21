@@ -8,7 +8,6 @@
 #include "serial.hpp"
 
 struct CodecHeader {
-    char magic[2];
     uint8_t width_256;
     uint8_t height_256;
     uint8_t flags;

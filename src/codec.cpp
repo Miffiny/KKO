@@ -3,7 +3,6 @@
 #include <array>
 #include <cstdint>
 #include <fstream>
-#include <iostream>
 #include <queue>
 #include <stdexcept>
 #include <utility>
@@ -11,34 +10,39 @@
 
 namespace {
 
-constexpr char MAGIC_0 = 'L';
-constexpr char MAGIC_1 = 'Z';
-constexpr size_t HEADER_SIZE = 5;
+//width, height and flags
+constexpr size_t HEADER_SIZE = 3;
 
+// Limit LZSS
 constexpr int LZ_WINDOW_SIZE = 1024;
+
+// minimum match length
 constexpr int LZ_MIN_MATCH = 3;
 constexpr int LZ_MAX_MATCH = 18;
 
 size_t pixel_count(uint32_t w, uint32_t h) { return static_cast<size_t>(w) * h; }
 
 void validate_image(const Image& image) {
-    if (!image.width || !image.height) throw std::runtime_error("Image dimensions must be > 0");
-    if (image.width % 256 || image.height % 256) throw std::runtime_error("Image dimensions must be multiples of 256");
+    //quick sanity checks, must be always satisfied
+    if (!image.width || !image.height) throw std::runtime_error("Missing or wrong dimensions");
+    if (image.width % 256 || image.height % 256) throw std::runtime_error("Dimensions arent multiples of 256");
     if (image.pixels.size() != pixel_count(image.width, image.height))
-        throw std::runtime_error("Image pixel buffer size does not match image dimensions");
-    if (image.width / 256 > 255 || image.height / 256 > 255)
-        throw std::runtime_error("Image dimensions exceed header capacity");
+        throw std::runtime_error("pixel buffer does not match dimensions");
 }
 
-void validate_magic(const CodecHeader& h) {
-    if (h.magic[0] != MAGIC_0 || h.magic[1] != MAGIC_1) throw std::runtime_error("Invalid container magic");
+void validate_header_dimensions(const CodecHeader& h) {
+    if (h.width_256 == 0 || h.height_256 == 0)
+        throw std::runtime_error("Invalid container dimensions in header");
 }
 
+//helpers to work with LZSS + Huffman
+//16-bit uint in little-endian
 void write_u16_le(std::vector<uint8_t>& out, uint16_t v) {
     out.push_back(static_cast<uint8_t>(v & 0xFFu));
     out.push_back(static_cast<uint8_t>((v >> 8) & 0xFFu));
 }
 
+//32-bit uint in little-endian
 void write_u32_le(std::vector<uint8_t>& out, uint32_t v) {
     out.push_back(static_cast<uint8_t>(v & 0xFFu));
     out.push_back(static_cast<uint8_t>((v >> 8) & 0xFFu));
@@ -63,6 +67,7 @@ uint32_t read_u32_le(const std::vector<uint8_t>& in, size_t& pos) {
     return v;
 }
 
+// Loads file into memory as byte vector + checks
 std::vector<uint8_t> read_entire_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary | std::ios::ate);
     if (!in) throw std::runtime_error("Cannot open input file: " + path);
@@ -75,6 +80,7 @@ std::vector<uint8_t> read_entire_file(const std::string& path) {
     return bytes;
 }
 
+// Writes byte vector to file + also checks
 void write_entire_file(const std::string& path, const std::vector<uint8_t>& bytes) {
     std::ofstream out(path, std::ios::binary);
     if (!out) throw std::runtime_error("Cannot open output file: " + path);
@@ -84,6 +90,7 @@ void write_entire_file(const std::string& path, const std::vector<uint8_t>& byte
     }
 }
 
+// Rejects unknown or out-of-range bits in the flag byte
 void validate_flags(uint8_t flags) {
     constexpr uint8_t known = FLAG_COMPRESSED | FLAG_VERTICAL | MODEL_MASK;
     if ((flags & ~known) != 0) throw std::runtime_error("Unknown flags in container header");
@@ -95,7 +102,6 @@ void validate_flags(uint8_t flags) {
 CodecHeader make_header(const Image& image, const SerialOptions& options, bool compressed) {
     validate_image(image);
     return CodecHeader{
-        {MAGIC_0, MAGIC_1},
         static_cast<uint8_t>(image.width / 256),
         static_cast<uint8_t>(image.height / 256),
         make_flags(options, compressed)
@@ -105,6 +111,7 @@ CodecHeader make_header(const Image& image, const SerialOptions& options, bool c
 uint32_t restore_width(const CodecHeader& h) { return static_cast<uint32_t>(h.width_256) * 256u; }
 uint32_t restore_height(const CodecHeader& h) { return static_cast<uint32_t>(h.height_256) * 256u; }
 
+// Compresses a byte stream with LZSS
 std::vector<uint8_t> lzss_compress(const std::vector<uint8_t>& in) {
     std::vector<uint8_t> out;
     if (in.empty()) return out;
@@ -115,10 +122,12 @@ std::vector<uint8_t> lzss_compress(const std::vector<uint8_t>& in) {
         out.push_back(0);
         uint8_t ctrl = 0;
 
+        // Each control byte describes up to 8 following literals or matches
         for (int bit = 0; bit < 8 && pos < in.size(); ++bit) {
             int best_len = 0, best_dist = 0;
             int start = static_cast<int>(pos) > LZ_WINDOW_SIZE ? static_cast<int>(pos) - LZ_WINDOW_SIZE : 0;
 
+            // Search window for the longest substrign
             for (int cand = static_cast<int>(pos) - 1; cand >= start; --cand) {
                 int len = 0;
                 while (len < LZ_MAX_MATCH &&
@@ -131,7 +140,6 @@ std::vector<uint8_t> lzss_compress(const std::vector<uint8_t>& in) {
                     if (len == LZ_MAX_MATCH) break;
                 }
             }
-
             if (best_len >= LZ_MIN_MATCH) {
                 uint16_t dist = static_cast<uint16_t>(best_dist - 1);
                 uint8_t len = static_cast<uint8_t>(best_len - LZ_MIN_MATCH);
@@ -143,13 +151,13 @@ std::vector<uint8_t> lzss_compress(const std::vector<uint8_t>& in) {
                 out.push_back(in[pos++]);
             }
         }
-
         out[ctrl_pos] = ctrl;
     }
 
     return out;
 }
 
+//LZSS token stream back to expected byte count
 std::vector<uint8_t> lzss_decompress(const std::vector<uint8_t>& in, size_t expected) {
     std::vector<uint8_t> out;
     out.reserve(expected);
@@ -158,15 +166,14 @@ std::vector<uint8_t> lzss_decompress(const std::vector<uint8_t>& in, size_t expe
     while (pos < in.size() && out.size() < expected) {
         uint8_t ctrl = in[pos++];
         for (int bit = 0; bit < 8 && out.size() < expected; ++bit) {
-            if (pos > in.size()) throw std::runtime_error("Corrupted LZSS stream");
             if (ctrl & (1u << bit)) {
                 if (pos >= in.size()) throw std::runtime_error("Corrupted LZSS literal");
                 out.push_back(in[pos++]);
             } else {
                 if (pos + 1 >= in.size()) throw std::runtime_error("Corrupted LZSS match");
                 uint8_t b1 = in[pos++], b2 = in[pos++];
-                int dist = static_cast<int>(static_cast<uint16_t>(b1) | (static_cast<uint16_t>((b2 >> 4) & 0x0F) << 8)) + 1;
-                int len = static_cast<int>(b2 & 0x0F) + LZ_MIN_MATCH;
+                int dist = (static_cast<uint16_t>(b1) | static_cast<uint16_t>(b2 >> 4 & 0x0F) << 8) + 1;
+                int len = (b2 & 0x0F) + LZ_MIN_MATCH;
                 if (dist <= 0 || static_cast<size_t>(dist) > out.size())
                     throw std::runtime_error("Invalid LZSS back-reference");
                 size_t start = out.size() - static_cast<size_t>(dist);
@@ -174,14 +181,17 @@ std::vector<uint8_t> lzss_decompress(const std::vector<uint8_t>& in, size_t expe
             }
         }
     }
-
     if (out.size() != expected) throw std::runtime_error("LZSS output size mismatch");
     return out;
 }
 
+//Huffman tree node during code-length construction
 struct HuffmanNode { uint64_t freq = 0; int symbol = -1, left = -1, right = -1; };
+
+// Stores Huffman code as bits + code length
 struct HuffmanCode { uint32_t bits = 0; uint8_t length = 0; };
 
+//bits into byte vector
 class BitWriter {
 public:
     void write_bit(uint8_t bit) {
@@ -200,6 +210,7 @@ private:
     uint8_t cur_ = 0, count_ = 0;
 };
 
+//Vector of bytes to bits
 class BitReader {
 public:
     explicit BitReader(const std::vector<uint8_t>& bytes) : bytes_(bytes) {}
@@ -215,6 +226,7 @@ private:
     uint8_t bit_ = 0;
 };
 
+// Traverses Huffman tree
 void build_lengths(const std::vector<HuffmanNode>& nodes, int node, int depth, std::array<uint8_t, 256>& lens) {
     const auto& n = nodes[static_cast<size_t>(node)];
     if (n.symbol >= 0) { lens[static_cast<size_t>(n.symbol)] = static_cast<uint8_t>(depth ? depth : 1); return; }
@@ -222,10 +234,12 @@ void build_lengths(const std::vector<HuffmanNode>& nodes, int node, int depth, s
     build_lengths(nodes, n.right, depth + 1, lens);
 }
 
+//Huffman code lengths from symbol frequencies
 std::array<uint8_t, 256> make_huffman_lengths(const std::vector<uint8_t>& in) {
     std::array<uint64_t, 256> freq{};
     for (uint8_t b : in) ++freq[b];
 
+    // The queue merges the two least frequent nodes
     struct Q { uint64_t freq; int idx; bool operator>(const Q& o) const { return freq != o.freq ? freq > o.freq : idx > o.idx; } };
     std::priority_queue<Q, std::vector<Q>, std::greater<Q>> pq;
     std::vector<HuffmanNode> nodes;
@@ -250,13 +264,14 @@ std::array<uint8_t, 256> make_huffman_lengths(const std::vector<uint8_t>& in) {
     return lens;
 }
 
+// Converts code lengths into Huffman
 std::array<HuffmanCode, 256> make_codes(const std::array<uint8_t, 256>& lens) {
     std::array<int, 33> bl{};
     for (uint8_t len : lens) {
-        if (len > 32) throw std::runtime_error("Huffman code length exceeds supported maximum");
         if (len) ++bl[len];
     }
 
+    // Huffman codes are assigned by increasing code length
     std::array<uint32_t, 33> next{};
     uint32_t code = 0;
     for (int bits = 1; bits <= 32; ++bits) {
@@ -272,6 +287,7 @@ std::array<HuffmanCode, 256> make_codes(const std::array<uint8_t, 256>& lens) {
     return codes;
 }
 
+// byte stream with huffman + header
 std::vector<uint8_t> huffman_compress(const std::vector<uint8_t>& in) {
     auto lens = make_huffman_lengths(in);
     auto codes = make_codes(lens);
@@ -295,6 +311,7 @@ std::vector<uint8_t> huffman_compress(const std::vector<uint8_t>& in) {
     return out;
 }
 
+// Decode using the serialized code lengths
 std::vector<uint8_t> huffman_decompress(const std::vector<uint8_t>& payload, size_t& pos, size_t expected) {
     std::array<uint8_t, 256> lens{};
     uint16_t used = read_u16_le(payload, pos);
@@ -307,6 +324,7 @@ std::vector<uint8_t> huffman_decompress(const std::vector<uint8_t>& payload, siz
 
     auto codes = make_codes(lens);
 
+    // Rebuild a decoding tree
     struct Node { int child[2] = {-1, -1}; int sym = -1; };
     std::vector<Node> tree(1);
 
@@ -340,11 +358,11 @@ std::vector<uint8_t> huffman_decompress(const std::vector<uint8_t>& payload, siz
         }
         out.push_back(static_cast<uint8_t>(tree[static_cast<size_t>(node)].sym));
     }
-
     pos = payload.size();
     return out;
 }
 
+// Compress with LZSS then Huffman
 std::vector<uint8_t> compress_payload(const std::vector<uint8_t>& in) {
     auto lz = lzss_compress(in);
     std::vector<uint8_t> out;
@@ -354,6 +372,7 @@ std::vector<uint8_t> compress_payload(const std::vector<uint8_t>& in) {
     return out;
 }
 
+// Huffman + LZSS decompress
 std::vector<uint8_t> decompress_payload(const std::vector<uint8_t>& in, size_t expected) {
     size_t pos = 0;
     uint32_t lz_size = read_u32_le(in, pos);
@@ -361,6 +380,7 @@ std::vector<uint8_t> decompress_payload(const std::vector<uint8_t>& in, size_t e
     return lzss_decompress(lz, expected);
 }
 
+// Holds one candidate encoding strategy and its resulting payload size.
 struct Candidate {
     SerialOptions options{};
     bool compressed = false;
@@ -368,6 +388,7 @@ struct Candidate {
     size_t total_size = 0;
 };
 
+// Builds both compressed and uncompressed variants for one serialization mode
 Candidate build_candidate(const Image& image, const SerialOptions& options) {
     auto serialized = serialize_image(image, options);
     auto compressed = compress_payload(serialized);
@@ -377,19 +398,7 @@ Candidate build_candidate(const Image& image, const SerialOptions& options) {
     return (cmp.total_size < raw.total_size) ? std::move(cmp) : std::move(raw);
 }
 
-const char* scan_name(ScanMode mode) {
-    return mode == ScanMode::Horizontal ? "horizontal" : "vertical";
-}
-
-const char* model_name(ModelMode mode) {
-    switch (mode) {
-        case ModelMode::Raw: return "raw";
-        case ModelMode::Delta: return "delta";
-        case ModelMode::Paeth2D: return "paeth2d";
-        default: return "unknown_model";
-    }
-}
-
+// encoding strategies
 std::vector<SerialOptions> candidate_options(bool adaptive_scan, bool use_model) {
     if (!adaptive_scan) {
         if (!use_model) return {{ScanMode::Horizontal, ModelMode::Raw}};
@@ -416,8 +425,10 @@ std::vector<SerialOptions> candidate_options(bool adaptive_scan, bool use_model)
     };
 }
 
-} // namespace
+    //here is the end of namespace
+}
 
+// Pack scan/model choices and the compression flag into one byte.
 uint8_t make_flags(const SerialOptions& options, bool compressed) {
     uint8_t flags = compressed ? FLAG_COMPRESSED : 0;
     if (options.scan_mode == ScanMode::Vertical) flags |= FLAG_VERTICAL;
@@ -426,6 +437,7 @@ uint8_t make_flags(const SerialOptions& options, bool compressed) {
     return static_cast<uint8_t>(flags | model_bits);
 }
 
+// Decode scan/model choices from the packed flag byte.
 SerialOptions parse_flags(uint8_t flags) {
     validate_flags(flags);
     return {
@@ -439,6 +451,7 @@ bool is_compressed(uint8_t flags) {
     return (flags & FLAG_COMPRESSED) != 0;
 }
 
+// Chooses the smallest supported encoding
 CodecPackage encode_image(const Image& image, bool adaptive_scan, bool use_model) {
     validate_image(image);
 
@@ -455,16 +468,12 @@ CodecPackage encode_image(const Image& image, bool adaptive_scan, bool use_model
 
     if (!have_best) throw std::runtime_error("Failed to build encoding candidates");
 
-    std::cout << "CHOICE scan=" << scan_name(best.options.scan_mode)
-              << " model=" << model_name(best.options.model_mode)
-              << " compressed=" << (best.compressed ? 1 : 0)
-              << " size=" << best.total_size << "\n";
-
     return {make_header(image, best.options, best.compressed), std::move(best.payload)};
 }
 
+// Decodes back to a raw
 Image decode_image(const CodecPackage& package) {
-    validate_magic(package.header);
+    validate_header_dimensions(package.header);
     validate_flags(package.header.flags);
 
     uint32_t width = restore_width(package.header);
@@ -482,13 +491,11 @@ Image decode_image(const CodecPackage& package) {
 }
 
 std::vector<uint8_t> pack_container(const CodecPackage& package) {
-    validate_magic(package.header);
+    validate_header_dimensions(package.header);
     validate_flags(package.header.flags);
 
     std::vector<uint8_t> out;
     out.reserve(HEADER_SIZE + package.payload.size());
-    out.push_back(static_cast<uint8_t>(package.header.magic[0]));
-    out.push_back(static_cast<uint8_t>(package.header.magic[1]));
     out.push_back(package.header.width_256);
     out.push_back(package.header.height_256);
     out.push_back(package.header.flags);
@@ -496,17 +503,16 @@ std::vector<uint8_t> pack_container(const CodecPackage& package) {
     return out;
 }
 
+// Parses into header and payload
 CodecPackage unpack_container(const std::vector<uint8_t>& bytes) {
     if (bytes.size() < HEADER_SIZE) throw std::runtime_error("Input is too small to be a valid container");
 
     CodecHeader header{};
-    header.magic[0] = static_cast<char>(bytes[0]);
-    header.magic[1] = static_cast<char>(bytes[1]);
-    header.width_256 = bytes[2];
-    header.height_256 = bytes[3];
-    header.flags = bytes[4];
+    header.width_256 = bytes[0];
+    header.height_256 = bytes[1];
+    header.flags = bytes[2];
 
-    validate_magic(header);
+    validate_header_dimensions(header);
     validate_flags(header.flags);
 
     return {
@@ -515,12 +521,14 @@ CodecPackage unpack_container(const std::vector<uint8_t>& bytes) {
     };
 }
 
+// Compresses a RAW input
 void compress_file(const ParsedArgs& args) {
     Image image = read_raw_image(args.infile, args.width);
     CodecPackage package = encode_image(image, args.adaptive_scan, args.use_model);
     write_entire_file(args.outfile, pack_container(package));
 }
 
+// Decompresses container to raw
 void decompress_file(const ParsedArgs& args) {
     CodecPackage package = unpack_container(read_entire_file(args.infile));
     write_raw_image(args.outfile, decode_image(package));

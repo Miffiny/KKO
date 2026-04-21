@@ -3,6 +3,7 @@
 #include <fstream>
 #include <stdexcept>
 
+// Loads an 8-bit RAW image and derives its height from the file size.
 Image read_raw_image(const std::string& path, uint32_t width) {
     if (width == 0) {
         throw std::runtime_error("Image width must be > 0");
@@ -46,6 +47,7 @@ Image read_raw_image(const std::string& path, uint32_t width) {
     return Image{width, height, std::move(pixels)};
 }
 
+// Writes an 8-bit RAW image after validating dimensions and buffer size.
 void write_raw_image(const std::string& path, const Image& image) {
     if (image.width == 0 || image.height == 0) {
         throw std::runtime_error("Image dimensions must be > 0");
